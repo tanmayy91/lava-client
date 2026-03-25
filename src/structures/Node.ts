@@ -169,7 +169,8 @@ export class LavalinkNode {
     private refreshPluginCache() {
         const pluginNames = Array.isArray(this.info?.plugins)
             ? this.info.plugins
-                  .map((plugin) => plugin?.name)
+                  .filter((plugin) => plugin && typeof plugin.name === "string")
+                  .map((plugin) => plugin.name)
                   .filter((name): name is string => typeof name === "string" && name.length > 0)
             : [];
 
@@ -296,7 +297,10 @@ export class LavalinkNode {
         response: Response;
         options: RequestInit & { path: string; extraQueryUrlParams?: URLSearchParams };
     }> {
-        const requestTimeoutMilliseconds = this.options.requestSignalTimeoutMS ?? DEFAULT_REQUEST_TIMEOUT_MS;
+        const hasCustomTimeout = typeof this.options.requestSignalTimeoutMS === "number";
+        const requestTimeoutMilliseconds = hasCustomTimeout
+            ? this.options.requestSignalTimeoutMS
+            : DEFAULT_REQUEST_TIMEOUT_MS;
 
         const options: RequestInit & { path: string; extraQueryUrlParams?: URLSearchParams } = {
             path: `/${this.version}/${endpoint.startsWith("/") ? endpoint.slice(1) : endpoint}`,
@@ -306,7 +310,11 @@ export class LavalinkNode {
             },
             signal:
                 requestTimeoutMilliseconds > 0
-                    ? AbortSignal.timeout(Math.max(MIN_REQUEST_TIMEOUT_MS, requestTimeoutMilliseconds))
+                    ? AbortSignal.timeout(
+                          hasCustomTimeout
+                              ? requestTimeoutMilliseconds
+                              : Math.max(MIN_REQUEST_TIMEOUT_MS, requestTimeoutMilliseconds),
+                      )
                     : undefined,
         };
 
