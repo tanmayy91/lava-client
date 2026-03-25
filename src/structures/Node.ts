@@ -298,8 +298,8 @@ export class LavalinkNode {
     }> {
         const hasCustomTimeout = typeof this.options.requestSignalTimeoutMS === "number";
         const requestTimeoutMilliseconds = hasCustomTimeout
-            ? this.options.requestSignalTimeoutMS
-            : Math.max(MIN_REQUEST_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS);
+            ? Math.max(MIN_REQUEST_TIMEOUT_MS, this.options.requestSignalTimeoutMS)
+            : DEFAULT_REQUEST_TIMEOUT_MS;
         const effectiveTimeout = requestTimeoutMilliseconds > 0 ? requestTimeoutMilliseconds : null;
 
         const options: RequestInit & { path: string; extraQueryUrlParams?: URLSearchParams } = {
