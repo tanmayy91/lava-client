@@ -16,7 +16,7 @@ export class QueueSaver {
     constructor(options: ManagerQueueOptions) {
         this._ = options?.queueStore || new DefaultQueueStore();
         this.options = {
-            maxPreviousTracks: options?.maxPreviousTracks || 25,
+            maxPreviousTracks: options?.maxPreviousTracks ?? 25,
         };
     }
 
