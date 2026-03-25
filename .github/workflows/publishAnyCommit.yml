@@ -6,7 +6,7 @@ on:
 jobs:
     publish:
         runs-on: ubuntu-latest
-        if: github.repository == 'tanmayy91/lavalink-client'
+        if: github.repository == 'tanmayy91/lava-client'
         steps:
             - name: Checkout code
               uses: actions/checkout@v4
