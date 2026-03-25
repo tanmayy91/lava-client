@@ -73,6 +73,16 @@ export class ManagerUtils {
             throw new RangeError("Argument 'data.encoded' must be present.");
         if (!data.info) throw new RangeError("Argument 'data.info' must be present.");
         try {
+            const duration =
+                (data as Track).info?.duration ??
+                (data as LavalinkTrack).info?.length ??
+                (data as any).length ??
+                0;
+            const title = data.info.title || "Unknown Title";
+            const author = data.info.author || "Unknown Author";
+            const uri = data.info.uri || "";
+            const sourceName = data.info.sourceName || "unknown";
+
             let transformedRequester =
                 typeof requester === "object" ? this.getTransformedRequester(requester) : undefined;
 
@@ -84,24 +94,25 @@ export class ManagerUtils {
                 transformedRequester = this.getTransformedRequester(data.userData.requester);
             }
 
-            const r = {
-                encoded: data.encoded,
-                info: {
-                    identifier: data.info.identifier,
-                    title: data.info.title,
-                    author: data.info.author,
-                    duration: (data as Track).info?.duration || (data as LavalinkTrack).info?.length,
-                    artworkUrl: data.info.artworkUrl || data.pluginInfo?.artworkUrl || (data as any).plugin?.artworkUrl,
-                    uri: data.info.uri,
-                    sourceName: data.info.sourceName,
-                    isSeekable: data.info.isSeekable,
-                    isStream: data.info.isStream,
-                    isrc: data.info.isrc,
-                },
-                userData: {
-                    ...data.userData,
-                    requester: transformedRequester,
-                },
+                const r = {
+                    encoded: data.encoded,
+                    info: {
+                        identifier: data.info.identifier,
+                        title,
+                        author,
+                        duration,
+                        length: duration,
+                        artworkUrl: data.info.artworkUrl || data.pluginInfo?.artworkUrl || (data as any).plugin?.artworkUrl,
+                        uri,
+                        sourceName,
+                        isSeekable: data.info.isSeekable ?? false,
+                        isStream: data.info.isStream ?? false,
+                        isrc: data.info.isrc ?? null,
+                    },
+                    userData: {
+                        ...data.userData,
+                        requester: transformedRequester,
+                    },
                 pluginInfo: this.buildPluginInfo(data, "clientData" in data ? data.clientData : {}),
                 requester: transformedRequester || this.getTransformedRequester(this.LavalinkManager?.options?.client),
             } as Track;

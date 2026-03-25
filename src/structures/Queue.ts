@@ -134,7 +134,7 @@ export class Queue {
     public current: Track | null = null;
     public options = { maxPreviousTracks: 25 };
     private readonly guildId: string = "";
-    private readonly QueueSaver: QueueSaver | null = null;
+    private readonly QueueSaver: QueueSaver;
     private managerUtils = new ManagerUtils();
     private queueChanges: QueueChangesWatcher | null;
 
@@ -148,13 +148,13 @@ export class Queue {
     constructor(
         guildId: string,
         data: Partial<StoredQueue> = {},
-        QueueSaver?: QueueSaver,
+        queueSaver?: QueueSaver,
         queueOptions?: ManagerQueueOptions,
     ) {
         this.queueChanges = queueOptions?.queueChangesWatcher || null;
         this.guildId = guildId;
-        this.QueueSaver = QueueSaver;
-        this.options.maxPreviousTracks = this.QueueSaver?.options?.maxPreviousTracks ?? this.options.maxPreviousTracks;
+        this.QueueSaver = queueSaver ?? new QueueSaver(queueOptions ?? {});
+        this.options.maxPreviousTracks = this.QueueSaver.options?.maxPreviousTracks ?? this.options.maxPreviousTracks;
 
         this.current = this.managerUtils.isTrack(data.current) ? data.current : null;
         this.previous =
