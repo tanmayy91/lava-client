@@ -67,6 +67,7 @@ import { NodeSymbol, queueTrackEnd, safeStringify } from "./Utils";
 
 const ERROR_BODY_PREVIEW_LIMIT = 200;
 const MIN_REQUEST_TIMEOUT_MS = 5000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 /**
  * Lavalink Node creator class
  */
@@ -295,7 +296,7 @@ export class LavalinkNode {
         response: Response;
         options: RequestInit & { path: string; extraQueryUrlParams?: URLSearchParams };
     }> {
-        const requestTimeoutMilliseconds = this.options.requestSignalTimeoutMS ?? 10_000;
+        const requestTimeoutMilliseconds = this.options.requestSignalTimeoutMS ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
         const options: RequestInit & { path: string; extraQueryUrlParams?: URLSearchParams } = {
             path: `/${this.version}/${endpoint.startsWith("/") ? endpoint.slice(1) : endpoint}`,
@@ -1033,12 +1034,7 @@ export class LavalinkNode {
                     `there is no lavalyrics-plugin available in the lavalink node (required for lyrics): ${this.id}`,
                 );
 
-            if (
-                this._checkForPlugins &&
-                !this.hasPlugin("lavasrc-plugin") &&
-                this._checkForPlugins &&
-                !this.hasPlugin("java-lyrics-plugin")
-            )
+            if (this._checkForPlugins && !this.hasPlugin("lavasrc-plugin") && !this.hasPlugin("java-lyrics-plugin"))
                 throw new RangeError(
                     `there is no lyrics source (via lavasrc-plugin / java-lyrics-plugin) available in the lavalink node (required for lyrics): ${this.id}`,
                 );
@@ -1068,12 +1064,7 @@ export class LavalinkNode {
                     `there is no lavalyrics-plugin available in the lavalink node (required for lyrics): ${this.id}`,
                 );
 
-            if (
-                this._checkForPlugins &&
-                !this.hasPlugin("lavasrc-plugin") &&
-                this._checkForPlugins &&
-                !this.hasPlugin("java-lyrics-plugin")
-            )
+            if (this._checkForPlugins && !this.hasPlugin("lavasrc-plugin") && !this.hasPlugin("java-lyrics-plugin"))
                 throw new RangeError(
                     `there is no lyrics source (via lavasrc-plugin / java-lyrics-plugin) available in the lavalink node (required for lyrics): ${this.id}`,
                 );
