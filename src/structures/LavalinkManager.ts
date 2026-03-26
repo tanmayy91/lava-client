@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 
 import { DebugEvents, DestroyReasons } from "./Constants";
+import { DefaultSources } from "./LavalinkManagerStatics";
 import { NodeManager } from "./NodeManager";
 import { Player } from "./Player";
 import { DefaultQueueStore } from "./Queue";
@@ -13,8 +14,82 @@ import type {
 } from "./Types/Manager";
 import type { LavalinkNodeOptions } from "./Types/Node";
 import type { PlayerOptions } from "./Types/Player";
-import type { ChannelDeletePacket, VoicePacket, VoiceServer, VoiceState } from "./Types/Utils";
+import type { Track, UnresolvedTrack } from "./Types/Track";
+import type { ChannelDeletePacket, VoicePacket, VoiceServer, VoiceState, SearchPlatform } from "./Types/Utils";
 import { ManagerUtils, MiniMap, safeStringify } from "./Utils";
+
+const FALLBACK_NODE_PRESETS: Array<Record<string, unknown>> = [
+    {
+        name: "Nerox-Main",
+        url: "lava-v4.ajieblogs.eu.org:80",
+        auth: "https://dsc.gg/ajidevserver",
+        secure: false,
+        priority: 1,
+    },
+    {
+        identifier: "nerox-cloud",
+        password: "youshallnotpass",
+        host: "lavalink.jirayu.net",
+        port: 13592,
+        secure: false,
+        priority: 2,
+    },
+    {
+        identifier: "Tapao NodeLink SG2 - v4",
+        password: "nyxbot.app/support",
+        host: "sg2-nodelink.nyxbot.app",
+        port: 3000,
+        secure: false,
+        priority: 3,
+    },
+    {
+        identifier: "AneFaiz - v4",
+        password: "https://discord.gg/mjS5J2K3ep",
+        host: "lava-v4.millohost.my.id",
+        port: 443,
+        secure: true,
+        priority: 4,
+    },
+];
+
+const DEFAULT_SPOTIFY_CONFIG = {
+    clientId: "d62dc6e25a374aad8f035111f351ea85",
+    clientSecret: "c807e75e805d4001be9fd81e4afd6272",
+    searchLimit: 10,
+    albumPageLimit: 1,
+    searchMarket: "IN",
+    playlistPageLimit: 1,
+};
+
+const DEFAULT_APPLE_CONFIG = {
+    imageWidth: 600,
+    imageHeight: 900,
+    countryCode: "us",
+};
+
+function normalizeHostPort(rawHost: string | undefined, rawUrl: string | undefined): { host: string; port: number } {
+    const candidate = rawHost || rawUrl || "";
+    const prefixed = /^https?:\/\//.test(candidate) ? candidate : `http://${candidate}`;
+    try {
+        const url = new URL(prefixed);
+        const port = url.port ? Number(url.port) : 80;
+        return { host: url.hostname, port: port || 80 };
+    } catch {
+        return { host: candidate || "localhost", port: 80 };
+    }
+}
+
+function presetToNodeOptions(preset: Record<string, unknown>): LavalinkNodeOptions {
+    const { host, port } = normalizeHostPort(preset.host as string, preset.url as string);
+    return {
+        id: (preset.name as string) || (preset.identifier as string) || `${host}:${port}`,
+        host,
+        port: typeof port === "number" && !Number.isNaN(port) ? port : 80,
+        secure: Boolean(preset.secure),
+        authorization: (preset.auth as string) || (preset.password as string) || "youshallnotpass",
+        priority: (preset.priority as number) || 1,
+    };
+}
 export class LavalinkManager<CustomPlayerT extends Player = Player> extends EventEmitter {
     /**
      * Emit an event
@@ -98,6 +173,26 @@ export class LavalinkManager<CustomPlayerT extends Player = Player> extends Even
      * @returns
      */
     private applyOptions(options: ManagerOptions<CustomPlayerT>) {
+        const resolvedDefaultSearchPlatform: SearchPlatform = (() => {
+            const provided = options?.defaultSearchEngine?.toLowerCase?.().trim();
+            if (provided) {
+                const mapped = DefaultSources[provided as keyof typeof DefaultSources];
+                if (typeof mapped === "string") return mapped as SearchPlatform;
+                if (Array.isArray(mapped) && typeof mapped[0] === "string") return mapped[0] as SearchPlatform;
+                if (!mapped && DefaultSources.youtube) return DefaultSources.youtube as SearchPlatform;
+            }
+            return (options?.playerOptions?.defaultSearchPlatform as SearchPlatform) ?? ("ytsearch" as SearchPlatform);
+        })();
+
+        const providedNodes =
+            Array.isArray(options?.nodes) && options.nodes?.length
+                ? options.nodes.filter((node) => this.utils.isNodeOptions(node))
+                : [];
+        const nodesToUse =
+            providedNodes.length > 0
+                ? providedNodes
+                : FALLBACK_NODE_PRESETS.map((preset) => presetToNodeOptions(preset));
+
         const optionsToAssign: RequiredManagerOptions<CustomPlayerT> = {
             ...options,
             client: {
@@ -107,12 +202,12 @@ export class LavalinkManager<CustomPlayerT extends Player = Player> extends Even
             },
             sendToShard: options?.sendToShard,
             autoMove: options?.autoMove ?? false,
-            nodes: options?.nodes as DeepRequired<LavalinkNodeOptions>[],
+            nodes: nodesToUse as DeepRequired<LavalinkNodeOptions>[],
             playerClass: (options?.playerClass ?? Player) as unknown as DeepRequired<CustomPlayerT>,
             playerOptions: {
                 applyVolumeAsFilter: options?.playerOptions?.applyVolumeAsFilter ?? false,
                 clientBasedPositionUpdateInterval: options?.playerOptions?.clientBasedPositionUpdateInterval ?? 100,
-                defaultSearchPlatform: options?.playerOptions?.defaultSearchPlatform ?? "ytsearch",
+                defaultSearchPlatform: resolvedDefaultSearchPlatform,
                 allowCustomSources: options?.playerOptions?.allowCustomSources ?? false,
                 onDisconnect: {
                     destroyPlayer: options?.playerOptions?.onDisconnect?.destroyPlayer ?? true,
@@ -134,6 +229,15 @@ export class LavalinkManager<CustomPlayerT extends Player = Player> extends Even
                 },
                 enforceSponsorBlockRequestForEventEnablement:
                     options?.playerOptions?.enforceSponsorBlockRequestForEventEnablement ?? true,
+            },
+            defaultSearchEngine: options?.defaultSearchEngine ?? "youtube",
+            spotifyConfig: {
+                ...DEFAULT_SPOTIFY_CONFIG,
+                ...options?.spotifyConfig,
+            },
+            appleConfig: {
+                ...DEFAULT_APPLE_CONFIG,
+                ...options?.appleConfig,
             },
             linksWhitelist: options?.linksWhitelist ?? [],
             linksBlacklist: options?.linksBlacklist ?? [],
@@ -404,6 +508,35 @@ export class LavalinkManager<CustomPlayerT extends Player = Player> extends Even
         const oldPlayer = this.getPlayer(guildId);
         if (!oldPlayer) return;
         return oldPlayer.destroy(destroyReason) as Promise<void | CustomPlayerT>;
+    }
+
+    /**
+     * Basic inbuilt queue helpers to manage tracks without directly accessing the player.
+     */
+    public async addToQueue(
+        guildId: string,
+        track: Track | UnresolvedTrack,
+        addToFront: boolean = false,
+    ): Promise<boolean> {
+        const player = this.getPlayer(guildId);
+        if (!player) throw new Error(`No player found for guild ${guildId}`);
+        if (addToFront) player.queue.tracks.unshift(track);
+        else player.queue.tracks.push(track);
+        await player.queue.utils.save();
+        return true;
+    }
+
+    public getQueue(guildId: string): (Track | UnresolvedTrack)[] {
+        const player = this.getPlayer(guildId);
+        return player?.queue.tracks ?? [];
+    }
+
+    public async clearQueue(guildId: string, keepCurrent: boolean = true): Promise<void> {
+        const player = this.getPlayer(guildId);
+        if (!player) return;
+        player.queue.tracks.splice(0, player.queue.tracks.length);
+        if (!keepCurrent) player.queue.current = null;
+        await player.queue.utils.save();
     }
 
     /**

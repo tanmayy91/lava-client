@@ -64,6 +64,12 @@ import type {
     WebSocketClosedEvent,
 } from "./Types/Utils";
 import { NodeSymbol, queueTrackEnd, safeStringify } from "./Utils";
+
+const ERROR_BODY_PREVIEW_LIMIT = 200;
+const MIN_REQUEST_TIMEOUT_MS = 5000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const formatBodyPreview = (body: string) =>
+    body.length > ERROR_BODY_PREVIEW_LIMIT ? `${body.slice(0, ERROR_BODY_PREVIEW_LIMIT)}...` : body;
 /**
  * Lavalink Node creator class
  */
@@ -127,10 +133,12 @@ export class LavalinkNode {
     private reconnectTimeout?: NodeJS.Timeout = undefined;
     /** The Reconnection Attempt counter (array of datetimes when it tried it.) */
     private reconnectAttempts: number[] = [];
+    /** Cached set of plugin names for fast lookups */
+    private pluginNameSet: Set<string> = new Set();
     /** The Socket of the Lavalink */
     private socket: WebSocket | null = null;
     /** Version of what the Lavalink Server should be */
-    private version = "v4";
+    private version: "v3" | "v4" = "v4";
 
     /**
      * Returns the LavalinkManager of the Node
@@ -158,6 +166,20 @@ export class LavalinkNode {
      */
     public get _checkForSources() {
         return !!this.options?.autoChecks?.sourcesValidations;
+    }
+
+    private refreshPluginCache() {
+        const pluginNames = Array.isArray(this.info?.plugins)
+            ? this.info.plugins
+                  .filter((plugin) => plugin && typeof plugin.name === "string")
+                  .map((plugin) => plugin.name)
+            : [];
+
+        this.pluginNameSet = new Set(pluginNames);
+    }
+
+    private hasPlugin(name: string): boolean {
+        return this.pluginNameSet.has(name);
     }
 
     /**
@@ -239,6 +261,13 @@ export class LavalinkNode {
             },
         };
 
+        if (options?.version) {
+            const normalizedVersion = options.version.toLowerCase();
+            if (normalizedVersion !== "v3" && normalizedVersion !== "v4")
+                throw new SyntaxError(`Invalid Lavalink version "${options.version}", expected "v3" or "v4"`);
+            this.version = normalizedVersion as "v3" | "v4";
+        }
+
         if (
             this.options.nodeType === "NodeLink" &&
             this.constructor.name === "LavalinkNode" &&
@@ -276,16 +305,23 @@ export class LavalinkNode {
         response: Response;
         options: RequestInit & { path: string; extraQueryUrlParams?: URLSearchParams };
     }> {
+        const customTimeout =
+            typeof this.options.requestSignalTimeoutMS === "number" ? this.options.requestSignalTimeoutMS : null;
+        const requestTimeoutMilliseconds =
+            customTimeout !== null
+                ? customTimeout > 0
+                    ? Math.max(MIN_REQUEST_TIMEOUT_MS, customTimeout)
+                    : customTimeout // <= 0 disables timeout
+                : DEFAULT_REQUEST_TIMEOUT_MS;
+        const effectiveTimeout = requestTimeoutMilliseconds > 0 ? requestTimeoutMilliseconds : null;
+
         const options: RequestInit & { path: string; extraQueryUrlParams?: URLSearchParams } = {
             path: `/${this.version}/${endpoint.startsWith("/") ? endpoint.slice(1) : endpoint}`,
             method: "GET",
             headers: {
                 Authorization: this.options.authorization,
             },
-            signal:
-                this.options.requestSignalTimeoutMS && this.options.requestSignalTimeoutMS > 0
-                    ? AbortSignal.timeout(this.options.requestSignalTimeoutMS)
-                    : undefined,
+            signal: effectiveTimeout ? AbortSignal.timeout(effectiveTimeout) : undefined,
         };
 
         modify?.(options);
@@ -332,13 +368,23 @@ export class LavalinkNode {
 
         if (["DELETE", "PUT"].includes(options.method)) return;
 
-        if (response.status === 204) return; // no content
-        if (response.status === 404)
+        if (!response.ok) {
+            const body = await response.text().catch(() => "");
+            const bodyPreview = body ? ` | body: ${formatBodyPreview(body)}` : "";
             throw new Error(
-                `Node Request resulted into an error, request-PATH: ${options.path} | headers: ${safeStringify(response.headers)}`,
+                `Node request failed with status ${response.status} ${response.statusText} for ${options.path}${bodyPreview}`,
             );
+        }
 
-        return parseAsText ? await response.text() : await response.json();
+        if (response.status === 204) return; // no content
+
+        try {
+            return parseAsText ? await response.text() : await response.json();
+        } catch (error) {
+            throw new Error(
+                `Failed to parse response from ${options.path}: ${error instanceof Error ? error.message : error}`,
+            );
+        }
     }
 
     /**
@@ -503,16 +549,27 @@ export class LavalinkNode {
                 `Query.source must be a source from LavaSrc: "spsearch" | "sprec" | "amsearch" | "dzsearch" | "dzisrc" | "ytmsearch" | "ytsearch"`,
             );
 
-        if (this._checkForPlugins && !this.info?.plugins?.find?.((v) => v.name === "lavasearch-plugin"))
+        if (this._checkForPlugins && !this.hasPlugin("lavasearch-plugin"))
             throw new RangeError(`there is no lavasearch-plugin available in the lavalink node: ${this.id}`);
-        if (this._checkForPlugins && !this.info?.plugins?.find?.((v) => v.name === "lavasrc-plugin"))
+        if (this._checkForPlugins && !this.hasPlugin("lavasrc-plugin"))
             throw new RangeError(`there is no lavasrc-plugin available in the lavalink node: ${this.id}`);
 
         const { response } = await this.rawRequest(
             `/loadsearch?query=${Query.source ? `${Query.source}:` : ""}${encodeURIComponent(Query.query)}${Query.types?.length ? `&types=${Query.types.join(",")}` : ""}`,
         );
 
-        const res = (response.status === 204 ? {} : await response.json()) as LavaSearchResponse;
+        if (!response.ok) {
+            const body = await response.text().catch(() => "");
+            const preview = body ? ` | body: ${formatBodyPreview(body)}` : "";
+            throw new Error(`LavaSearch request failed (${response.status} ${response.statusText})${preview}`);
+        }
+
+        let res: LavaSearchResponse;
+        try {
+            res = (response.status === 204 ? {} : await response.json()) as LavaSearchResponse;
+        } catch (error) {
+            throw new Error(`Failed to parse LavaSearch response: ${error instanceof Error ? error.message : error}`);
+        }
 
         if (throwOnEmpty === true && !Object.entries(res).flat().filter(Boolean).length) {
             this._emitDebugEvent(DebugEvents.LavaSearchNothingFound, {
@@ -652,9 +709,15 @@ export class LavalinkNode {
             this.sessionId = this.options.sessionId || sessionId;
         }
 
+        const wsPath = (this.options.wsPath || `/${this.version}/websocket`).startsWith("/")
+            ? this.options.wsPath || `/${this.version}/websocket`
+            : `/${this.options.wsPath}`;
+
         this.socket = new WebSocket(
-            `ws${this.options.secure ? "s" : ""}://${this.options.host}:${this.options.port}/v4/websocket`,
-            { headers },
+            `ws${this.options.secure ? "s" : ""}://${this.options.host}:${this.options.port}${wsPath}`,
+            {
+                headers,
+            },
         );
         this.socket.on("open", this.open.bind(this));
         this.socket.on("close", (code, reason) => this.close(code, reason?.toString()));
@@ -986,17 +1049,12 @@ export class LavalinkNode {
         get: async (track: Track, skipTrackSource: boolean = false): Promise<LyricsResult | null> => {
             if (!this.sessionId) throw new Error("the Lavalink-Node is either not ready, or not up to date!");
 
-            if (this._checkForPlugins && !this.info?.plugins?.find?.((v) => v.name === "lavalyrics-plugin"))
+            if (this._checkForPlugins && !this.hasPlugin("lavalyrics-plugin"))
                 throw new RangeError(
                     `there is no lavalyrics-plugin available in the lavalink node (required for lyrics): ${this.id}`,
                 );
 
-            if (
-                this._checkForPlugins &&
-                !this.info?.plugins?.find?.((v) => v.name === "lavasrc-plugin") &&
-                this._checkForPlugins &&
-                !this.info?.plugins?.find?.((v) => v.name === "java-lyrics-plugin")
-            )
+            if (this._checkForPlugins && !this.hasPlugin("lavasrc-plugin") && !this.hasPlugin("java-lyrics-plugin"))
                 throw new RangeError(
                     `there is no lyrics source (via lavasrc-plugin / java-lyrics-plugin) available in the lavalink node (required for lyrics): ${this.id}`,
                 );
@@ -1021,17 +1079,12 @@ export class LavalinkNode {
         getCurrent: async (guildId: string, skipTrackSource: boolean = false): Promise<LyricsResult | null> => {
             if (!this.sessionId) throw new Error("the Lavalink-Node is either not ready, or not up to date!");
 
-            if (this._checkForPlugins && !this.info?.plugins?.find?.((v) => v.name === "lavalyrics-plugin"))
+            if (this._checkForPlugins && !this.hasPlugin("lavalyrics-plugin"))
                 throw new RangeError(
                     `there is no lavalyrics-plugin available in the lavalink node (required for lyrics): ${this.id}`,
                 );
 
-            if (
-                this._checkForPlugins &&
-                !this.info?.plugins?.find?.((v) => v.name === "lavasrc-plugin") &&
-                this._checkForPlugins &&
-                !this.info?.plugins?.find?.((v) => v.name === "java-lyrics-plugin")
-            )
+            if (this._checkForPlugins && !this.hasPlugin("lavasrc-plugin") && !this.hasPlugin("java-lyrics-plugin"))
                 throw new RangeError(
                     `there is no lyrics source (via lavasrc-plugin / java-lyrics-plugin) available in the lavalink node (required for lyrics): ${this.id}`,
                 );
@@ -1057,7 +1110,7 @@ export class LavalinkNode {
         subscribe: async (guildId: string, skipTrackSource?: boolean): Promise<unknown> => {
             if (!this.sessionId) throw new Error("the Lavalink-Node is either not ready, or not up to date!");
 
-            if (this._checkForPlugins && !this.info?.plugins?.find?.((v) => v.name === "lavalyrics-plugin"))
+            if (this._checkForPlugins && !this.hasPlugin("lavalyrics-plugin"))
                 throw new RangeError(
                     `there is no lavalyrics-plugin available in the lavalink node (required for lyrics): ${this.id}`,
                 );
@@ -1084,7 +1137,7 @@ export class LavalinkNode {
         unsubscribe: async (guildId: string): Promise<void> => {
             if (!this.sessionId) throw new Error("the Lavalink-Node is either not ready, or not up to date!");
 
-            if (this._checkForPlugins && !this.info?.plugins?.find?.((v) => v.name === "lavalyrics-plugin"))
+            if (this._checkForPlugins && !this.hasPlugin("lavalyrics-plugin"))
                 throw new RangeError(
                     `there is no lavalyrics-plugin available in the lavalink node (required for lyrics): ${this.id}`,
                 );
@@ -1716,6 +1769,7 @@ export class LavalinkNode {
         }
 
         this.info = await this.fetchInfo().catch((e) => (console.error(e, "ON-OPEN-FETCH"), null));
+        this.refreshPluginCache();
 
         if (!this.info && ["v3", "v4"].includes(this.version)) {
             const errorString = `Lavalink Node (${this.restAddress}) does not provide any /${this.version}/info`;
@@ -2169,7 +2223,7 @@ export class LavalinkNode {
      */
     public async getSponsorBlock(player: Player): Promise<SponsorBlockSegment[]> {
         // no plugin enabled
-        if (this._checkForPlugins && !this.info?.plugins?.find?.((v) => v.name === "sponsorblock-plugin"))
+        if (this._checkForPlugins && !this.hasPlugin("sponsorblock-plugin"))
             throw new RangeError(`there is no sponsorblock-plugin available in the lavalink node: ${this.id}`);
         // do the request
         return (await this.request(
@@ -2193,7 +2247,7 @@ export class LavalinkNode {
         segments: SponsorBlockSegment[] = ["sponsor", "selfpromo"],
     ): Promise<void> {
         // no plugin enabled
-        if (this._checkForPlugins && !this.info?.plugins?.find?.((v) => v.name === "sponsorblock-plugin"))
+        if (this._checkForPlugins && !this.hasPlugin("sponsorblock-plugin"))
             throw new RangeError(`there is no sponsorblock-plugin available in the lavalink node: ${this.id}`);
         // no segments length
         if (!segments.length) throw new RangeError("No Segments provided. Did you ment to use 'deleteSponsorBlock'?");
@@ -2239,7 +2293,7 @@ export class LavalinkNode {
      */
     public async deleteSponsorBlock(player: Player): Promise<void> {
         // no plugin enabled
-        if (this._checkForPlugins && !this.info?.plugins?.find?.((v) => v.name === "sponsorblock-plugin"))
+        if (this._checkForPlugins && !this.hasPlugin("sponsorblock-plugin"))
             throw new RangeError(`there is no sponsorblock-plugin available in the lavalink node: ${this.id}`);
         // do the request
         await this.request(`/sessions/${this.sessionId}/players/${player.guildId}/sponsorblock/categories`, (r) => {
