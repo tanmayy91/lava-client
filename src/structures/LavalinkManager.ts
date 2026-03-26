@@ -15,6 +15,7 @@ import type { LavalinkNodeOptions } from "./Types/Node";
 import type { PlayerOptions } from "./Types/Player";
 import type { ChannelDeletePacket, VoicePacket, VoiceServer, VoiceState } from "./Types/Utils";
 import { ManagerUtils, MiniMap, safeStringify } from "./Utils";
+import type { Track, UnresolvedTrack } from "./Types/Track";
 
 const FALLBACK_NODE_PRESETS: Array<Record<string, unknown>> = [
     {
@@ -471,6 +472,35 @@ export class LavalinkManager<CustomPlayerT extends Player = Player> extends Even
         const oldPlayer = this.getPlayer(guildId);
         if (!oldPlayer) return;
         return oldPlayer.destroy(destroyReason) as Promise<void | CustomPlayerT>;
+    }
+
+    /**
+     * Basic inbuilt queue helpers to manage tracks without directly accessing the player.
+     */
+    public async addToQueue(
+        guildId: string,
+        track: Track | UnresolvedTrack,
+        addToFront: boolean = false,
+    ): Promise<boolean> {
+        const player = this.getPlayer(guildId);
+        if (!player) throw new Error(`No player found for guild ${guildId}`);
+        if (addToFront) player.queue.tracks.unshift(track);
+        else player.queue.tracks.push(track);
+        await player.queue.utils.save();
+        return true;
+    }
+
+    public getQueue(guildId: string): (Track | UnresolvedTrack)[] {
+        const player = this.getPlayer(guildId);
+        return player?.queue.tracks ?? [];
+    }
+
+    public async clearQueue(guildId: string, keepCurrent: boolean = true): Promise<void> {
+        const player = this.getPlayer(guildId);
+        if (!player) return;
+        player.queue.tracks.splice(0, player.queue.tracks.length);
+        if (!keepCurrent) player.queue.current = null;
+        await player.queue.utils.save();
     }
 
     /**
